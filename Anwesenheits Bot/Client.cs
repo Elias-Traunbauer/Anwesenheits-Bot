@@ -22,6 +22,8 @@ namespace Anwesenheits_Bot
 
         IUserMessage list;
 
+        public List<string> _offline = new List<string>();
+
         public Client(string token)
         {
             _client = new DiscordSocketClient();
@@ -47,6 +49,72 @@ namespace Anwesenheits_Bot
             _client.ReactionAdded += client_ReactionAdded;
 
             _client.Log += client_Log;
+
+            _client.GuildMemberUpdated += client_GuildMemberUpdated;
+
+            _client.MessageDeleted += client_MessageDeleted;
+        }
+
+        private async Task client_MessageDeleted(Cacheable<IMessage, ulong> msg, ISocketMessageChannel channel)
+        {
+            if (msg.Id == list?.Id && listOpen)
+            {
+                list = await channel.SendMessageAsync("Diese Liste nicht löschen!");
+
+                await list.AddReactionAsync(new Emoji("✅"));
+
+                await UpdateList();
+            }
+        }
+
+        private async Task client_GuildMemberUpdated(SocketGuildUser user, SocketGuildUser none)
+        {
+            try
+            {
+                if (listOpen)
+                {
+                    foreach (var item in user.Roles)
+                    {
+                        if (item.Name == "Schüler") //jaja geht schöner
+                        {
+                            if (user.Status != UserStatus.Online)
+                            {
+                                foreach (var temp in _offline)
+                                {
+                                    if (temp == user.Nickname)
+                                    {
+                                        _offline.Remove(temp);
+
+                                        _students.Add(new Student(temp, DateTime.Now.ToShortTimeString().ToString() + " Uhr"));
+                                        break;
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                foreach (var tep in _students)
+                                {
+                                    if (tep._name == user.Nickname)
+                                    {
+                                        _students.Remove(tep);
+
+                                        _offline.Add(tep._name);
+                                        break;
+                                    }
+                                }
+                            }
+
+                            await UpdateList();
+
+                            return;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(ex);
+            }
         }
 
         private async Task client_Log(LogMessage arg)
@@ -56,10 +124,17 @@ namespace Anwesenheits_Bot
 
         private async Task client_MessageReceived(SocketMessage message)
         {
+            if (message.Channel.Name != "anwesenheit")
+            {
+                return;
+            }
+
             if (message.Author.IsBot)
             {
                 return;
             }
+
+            await message.DeleteAsync();
 
             try
             {
@@ -74,8 +149,6 @@ namespace Anwesenheits_Bot
                 text = text.Substring(1);
 
                 await ExecuteCommandAsync(text, context);
-
-                await message.DeleteAsync();
             }
             catch (Exception ex)
             {
@@ -85,7 +158,7 @@ namespace Anwesenheits_Bot
 
         private async Task client_ReactionAdded(Cacheable<IUserMessage, ulong> message, ISocketMessageChannel channel, SocketReaction reaction)
         {
-            if (listOpen)
+            if (listOpen && message.Id == list.Id)
             {
                 if (reaction.Emote.Name.Equals("✅"))
                 {
@@ -98,6 +171,8 @@ namespace Anwesenheits_Bot
                         if (nickname == item._name)
                         {
                             _students[i]._veryfied = true;
+
+                            _students[i]._time = DateTime.Now.ToShortTimeString().ToString() + " Uhr";
 
                             await UpdateList();
 
@@ -118,21 +193,32 @@ namespace Anwesenheits_Bot
                     await StartList(context);
                     break;
 
-                case "a":
-                    if (listOpen)
-                    {
-                        //if (((SocketGuildUser)context.Message.Author).Roles)
-                        //{
-
-                        //}
-                    }
-
-                    break;
-
                 case "ende":
                     await list.DeleteAsync();
 
+                    _offline = new List<string>();
+
                     listOpen = false;
+                    break;
+
+                case "v":
+                    if (listOpen)
+                    {
+                        foreach (Student item in _students)
+                        {
+                            item._veryfied = false;
+                        }
+
+                        await list.RemoveAllReactionsAsync();
+
+                        await list.AddReactionAsync(new Emoji("✅"));
+
+                        await UpdateList();
+                    }
+                    break;
+
+                case "hilfe":
+                    await context.Channel.SendMessageAsync("", false, new EmbedBuilder().WithTitle("Kommandos").AddField("Generell", "+ls     -> Liste Starten.\n+v      -> neue Verifizierung.\n+ende   -> liste Beenden.\n+hilfe  -> Hilfe anzeigen.").Build());
                     break;
 
                 default:
@@ -149,22 +235,32 @@ namespace Anwesenheits_Bot
                 foreach (var user in context.Guild.Users)
                 {
                     if (user.Status != UserStatus.Offline)
-                    foreach (var role in user.Roles)
-                    {
-                        if (role.Name == "Schüler")
+                        foreach (var role in user.Roles)
                         {
-                            students.Add(user);
+                            if (role.Name == "Schüler")
+                            {
+                                students.Add(user);
 
-                            break;
+                                break;
+                            }
                         }
-                    }
+                    else
+                        foreach (var role in user.Roles)
+                        {
+                            if (role.Name == "Schüler")
+                            {
+                                _offline.Add((user as IGuildUser).Nickname);
+
+                                break;
+                            }
+                        }
                 }
 
                 _students = new List<Student>();
 
                 foreach (var user in students)
                 {
-                    _students.Add(new Student((user as IGuildUser).Nickname));
+                    _students.Add(new Student((user as IGuildUser).Nickname, "seit Anfang"));
                 }
 
                 list = await context.Channel.SendMessageAsync("", false, GetEmbed().Build());
@@ -176,8 +272,8 @@ namespace Anwesenheits_Bot
         }
 
         private async Task UpdateList()
-        { 
-            await list.ModifyAsync(m => m.Embed = GetEmbed().Build());
+        {
+            await list.ModifyAsync(m => { m.Embed = GetEmbed().Build(); m.Content = ""; });
         }
 
         private EmbedBuilder GetEmbed()
@@ -186,7 +282,7 @@ namespace Anwesenheits_Bot
 
             e.WithTitle("Anwesenheits Liste");
 
-            e.WithDescription($"Verifiziere dich indem du auf den Häckchen button drückst! Melde dich ggf. mit {prefix}a an!");
+            e.WithDescription($"Beweise deine geistige Anwesenheit, inedm du auf das ✅ drückst!");
 
             string verified = "";
 
@@ -196,34 +292,74 @@ namespace Anwesenheits_Bot
 
             Array.Sort(students, (x, y) => String.Compare(x._name, y._name));
 
+            int verifyCount = 0;
+
+            int noVerifyCount = 0;
+
+            string time = "";
+
             foreach (var student in students)
             {
                 if (student._veryfied)
                 {
                     verified += student._name + "\n";
+
+                    time += student._time + "\n";
+
+                    verifyCount++;
                 }
                 else
                 {
                     notverified += student._name + "\n";
+
+                    noVerifyCount++;
                 }
             }
 
             if (verified != "")
             {
-                e.AddField("Verifiziert:", verified);
+                e.AddField($"{verifyCount} geistig anwesend:", verified, true);
+
+                e.AddField("Zeit:", time, true);
             }
             else
             {
-                e.AddField("Verifiziert:", "-");
+                e.AddField("0 geistig anwesend:", "-", true);
+
+                e.AddField("Zeit:", "-", true);
             }
 
             if (notverified != "")
             {
-                e.AddField("Nicht verifiziert:", notverified);
+                e.AddField($"{noVerifyCount} online:", notverified);
             }
             else
             {
-                e.AddField("Nicht verifiziert:", "-");
+                e.AddField("0 online:", "-");
+            }
+
+            int offlineCount = 0;
+
+            string offline = "";
+
+            string[] off = _offline.ToArray();
+
+            Array.Sort(off, (x, y) => String.Compare(x, y));
+
+            foreach (var item in off)
+            {
+                offline += item + "\n";
+
+                offlineCount++;
+            }
+
+            if (offline != "")
+            {
+                e.AddField($"{offlineCount} offline:", offline);
+            }
+            else
+            {
+                e.AddField("0 offline:", "-");
             }
 
             e.WithColor(Color.DarkRed);
@@ -236,12 +372,15 @@ namespace Anwesenheits_Bot
     {
         public string _name;
         public bool _veryfied;
+        public string _time;
 
-        public Student(string name)
+        public Student(string name, string time)
         {
             _name = name;
 
             _veryfied = false;
+
+            _time = time;
         }
     }
 }
